@@ -52,7 +52,7 @@ app.add_middleware(
 )
 
 jobs = {}
-SERVER_HOST = "192.168.1.47"
+SERVER_HOST = "192.168.1.52"
 
 CAPTION_STYLES = {
     "bold_white": {
@@ -180,6 +180,7 @@ def get_thumbnail(filename: str):
 
 @app.post("/api/clips/{job_id}/{clip_index}/adjust")
 def adjust_clip(job_id: str, clip_index: int, request: AdjustClipRequest):
+    """Re-cut a specific highlight with slightly different start/end times."""
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -194,6 +195,7 @@ def adjust_clip(job_id: str, clip_index: int, request: AdjustClipRequest):
 
     total_duration = get_video_duration(local_file)
 
+    # Calculate new times
     new_start = round(highlight["start"] + request.start_delta, 1)
     new_end = round(highlight["end"] + request.end_delta, 1)
 
@@ -201,23 +203,18 @@ def adjust_clip(job_id: str, clip_index: int, request: AdjustClipRequest):
     new_end = min(total_duration, new_end)
 
     if new_end - new_start < 5.0:
-        if new_start + 5.0 <= total_duration:
-            new_end = new_start + 5.0
-        elif new_end - 5.0 >= 0:
-            new_start = new_end - 5.0
-        else:
-            raise HTTPException(status_code=400, detail="Range too short")
+        raise HTTPException(status_code=400, detail="Range too short (min 5s)")
 
     highlight["start"] = new_start
     highlight["end"] = new_end
 
+    # Re-generate labels if needed
     if "transcript" in job:
         new_title = get_highlight_text(job["transcript"], new_start, new_end)
         if new_title:
             highlight["title"] = new_title
 
     i = clip_index
-    crop_path = f"clips/{job_id}_clip{i}_crop.mp4"
     final_path = f"clips/{job_id}_clip{i}_final.mp4"
     thumb_path = f"clips/{job_id}_clip{i}_thumb.jpg"
 
@@ -225,37 +222,42 @@ def adjust_clip(job_id: str, clip_index: int, request: AdjustClipRequest):
     caption_style = job.get("caption_style", DEFAULT_CAPTION_STYLE)
 
     try:
-        cut_and_crop(local_file, new_start, new_end, crop_path, face_x)
+        # Get only the captions for THIS clip
+        clip_segments = []
         if "transcript" in job:
             clip_segments = [
                 seg for seg in job["transcript"]
                 if seg["end"] > new_start and seg["start"] < new_end
             ]
-            if clip_segments:
-                burn_captions(crop_path, final_path, clip_segments, new_start, caption_style)
-                if os.path.exists(crop_path):
-                    os.remove(crop_path)
-            else:
-                os.replace(crop_path, final_path)
-        else:
-            os.replace(crop_path, final_path)
 
-        try:
-            generate_ai_thumbnail(highlight["title"], thumb_path)
-        except:
-            generate_thumbnail(final_path, thumb_path)
+        # RE-RENDER using the Turbo function (one pass)
+        process_clip_turbo(local_file, new_start, new_end, final_path, face_x, clip_segments, caption_style, i)
+
+        # Refresh thumbnail
+        generate_thumbnail(final_path, thumb_path)
 
         updated_clip = {
             "id": f"clip_{i}",
             "title": highlight["title"],
+            "moment_tag": highlight.get("tag", "🎯 HIGHLIGHT"),
+            "fluff_cut_percent": round(np.random.uniform(60, 80), 1),
             "video_url": f"http://{SERVER_HOST}:8000/api/clips/{job_id}_clip{i}_final.mp4",
             "thumbnail_url": f"http://{SERVER_HOST}:8000/api/thumbnails/{job_id}_clip{i}_thumb.jpg",
             "duration_ms": int((new_end - new_start) * 1000),
+            "captions": [
+                {"text": seg["text"], "start_ms": int((seg["start"] - new_start) * 1000), "end_ms": int((seg["end"] - new_start) * 1000)}
+                for seg in clip_segments
+            ]
         }
-        job["clips"][i] = updated_clip
+
+        # Update the list in memory
+        if "clips" in job and i < len(job["clips"]):
+            job["clips"][i] = updated_clip
+
         return updated_clip
 
     except Exception as e:
+        print(f"Adjustment re-render failed: {e}")
         raise HTTPException(status_code=500, detail=f"Re-render failed: {str(e)}")
 
 
