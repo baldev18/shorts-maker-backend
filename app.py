@@ -444,7 +444,7 @@ def process_job(job_id: str) -> None:
             update_job(job_id, status="downloading", stage="downloading", progress=5, message="Downloading source video.")
             source = SOURCES_DIR / f"{job_id}.mp4"
             try:
-                with yt_dlp.YoutubeDL({"outtmpl": str(source), "format": "bv*[height<=1080]+ba/b[height<=1080]/b", "merge_output_format": "mp4", "retries": 3, "fragment_retries": 3, "socket_timeout": 30, "quiet": True, "noplaylist": True}) as downloader:
+                with yt_dlp.YoutubeDL({"outtmpl": str(source), "format": "bv*[height<=1080]+ba/b[height<=1080]/b", "merge_output_format": "mp4", "retries": 3, "fragment_retries": 3, "socket_timeout": 30, "quiet": True, "noplaylist": True, "cookiefile": "/etc/secrets/cookies.txt"}) as downloader:
                     downloader.download([job["source"]])
             except Exception as error:
                 fail_job(job_id, "VIDEO_DOWNLOAD_FAILED", "Unable to download the YouTube video. It may be private, restricted, or temporarily blocked by YouTube.", str(error))

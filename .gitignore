@@ -10,4 +10,4 @@ backend_stdout.log
 backend_stderr.log
 server_out.txt
 server_err.txt
-echo cookies.txt >> .gitignore
+cookies.txt
