@@ -1,0 +1,177 @@
+[33mcommit ae96707e1e1a23f0b3027dd262c14c23068af3fb[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: BALDEVSINH <baldevbaraiya18@gmail.com>
+Date:   Tue Sep 1 12:31:37 2026 +0530
+
+    backend
+
+[1mdiff --git a/app.py b/app.py[m
+[1mindex 9a6563f..e5d1d82 100644[m
+[1m--- a/app.py[m
+[1m+++ b/app.py[m
+[36m@@ -265,6 +265,25 @@[m [mdef get_whisper() -> WhisperModel:[m
+     return whisper_model[m
+ [m
+ [m
+[32m+[m[32mdef detect_scene_changes(source: Path, threshold: float = 0.3) -> list[float]:[m
+[32m+[m[32m    """Detect visual scene-cut timestamps so clips can start on a clean cut[m
+[32m+[m[32m    instead of mid-shot. Downscales first to keep this fast."""[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        result = subprocess.run([m
+[32m+[m[32m            ["ffmpeg", "-i", str(source), "-vf", f"scale=320:-2,select='gt(scene,{threshold})',showinfo", "-f", "null", "-"],[m
+[32m+[m[32m            capture_output=True, text=True,[m
+[32m+[m[32m        )[m
+[32m+[m[32m    except FileNotFoundError:[m
+[32m+[m[32m        return [][m
+[32m+[m[32m    times = [][m
+[32m+[m[32m    for line in result.stderr.splitlines():[m
+[32m+[m[32m        if "pts_time:" in line:[m
+[32m+[m[32m            match = re.search(r"pts_time:(\d+\.?\d*)", line)[m
+[32m+[m[32m            if match:[m
+[32m+[m[32m                times.append(float(match.group(1)))[m
+[32m+[m[32m    return sorted(times)[m
+[32m+[m
+[32m+[m
+ def transcribe(source: Path, work_dir: Path) -> list[dict[str, Any]]:[m
+     audio = work_dir / "audio.wav"[m
+     run(["ffmpeg", "-y", "-i", str(source), "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(audio)], "Audio extraction")[m
+[36m@@ -276,29 +295,70 @@[m [mdef transcribe(source: Path, work_dir: Path) -> list[dict[str, Any]]:[m
+     return transcript[m
+ [m
+ [m
+[31m-def choose_highlights(transcript: list[dict[str, Any]], duration: float, count: int, clip_duration: int) -> list[dict[str, Any]]:[m
+[31m-    """Use OpenAI when configured; otherwise use a reliable local fallback."""[m
+[32m+[m[32mdef choose_highlights(transcript: list[dict[str, Any]], duration: float, count: int, clip_duration: int, scene_times: list[float] | None = None) -> list[dict[str, Any]]:[m
+[32m+[m[32m    """Use OpenAI when configured; otherwise use a reliable local fallback.[m
+[32m+[m[32m    When scene_times is given, clip start times snap to the nearest visual[m
+[32m+[m[32m    scene-cut (within 3s) so clips begin on a clean cut."""[m
+[32m+[m[32m    scene_times = scene_times or [][m
+[32m+[m
+[32m+[m[32m    def snap(clips: list[dict[str, Any]]) -> list[dict[str, Any]]:[m
+[32m+[m[32m        for clip in clips:[m
+[32m+[m[32m            length = clip["end"] - clip["start"][m
+[32m+[m[32m            if scene_times:[m
+[32m+[m[32m                nearest = min(scene_times, key=lambda t: abs(t - clip["start"]))[m
+[32m+[m[32m                if abs(nearest - clip["start"]) <= 3:[m
+[32m+[m[32m                    clip["start"] = round(max(0.0, nearest), 2)[m
+[32m+[m[32m                    clip["end"] = round(min(duration, clip["start"] + length), 2)[m
+[32m+[m[32m        clips.sort(key=lambda clip: clip["start"])[m
+[32m+[m[32m        deduped: list[dict[str, Any]] = [][m
+[32m+[m[32m        for clip in clips:[m
+[32m+[m[32m            if not deduped or clip["start"] >= deduped[-1]["end"]:[m
+[32m+[m[32m                deduped.append(clip)[m
+[32m+[m[32m        return deduped[m
+[32m+[m
+     if OPENAI_API_KEY and transcript:[m
+[31m-        try:[m
+[31m-            source_text = "\n".join(f"[{segment['start']:.1f}-{segment['end']:.1f}] {segment['text']}" for segment in transcript)[m
+[31m-            prompt = f"""Pick exactly {count} non-overlapping short-video highlights from this transcript. Each must be no longer than {clip_duration} seconds. Preserve the transcript's original spoken language exactly; never translate Hindi, Hinglish, Gujarati, or English. Return JSON only: {{\"highlights\":[{{\"start\":number,\"end\":number,\"tag\":string}}]}}.\n\n{source_text}"""[m
+[31m-            payload = json.dumps({"model": OPENAI_MODEL, "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}).encode()[m
+[31m-            request = Request("https://api.openai.com/v1/chat/completions", data=payload, headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, method="POST")[m
+[31m-            with urlopen(request, timeout=30) as response:[m
+[31m-                content = json.loads(json.loads(response.read())["choices"][0]["message"]["content"])[m
+[31m-            selected = [][m
+[31m-            for item in content.get("highlights", []):[m
+[31m-                start = max(0.0, float(item["start"]))[m
+[31m-                end = min(duration, min(float(item["end"]), start + clip_duration))[m
+[31m-                if end - start >= 10:[m
+[31m-                    selected.append({"start": round(start, 2), "end": round(end, 2), "title": "", "tag": str(item.get("tag", "HIGHLIGHT"))[:32]})[m
+[31m-            if selected:[m
+[31m-                return selected[:count][m
+[31m-        except (KeyError, TypeError, ValueError, URLError, TimeoutError, OSError) as error:[m
+[31m-            print(f"OpenAI highlight selection unavailable; using local selection: {error}")[m
+[32m+[m[32m        source_text = "\n".join(f"[{segment['start']:.1f}-{segment['end']:.1f}] {segment['text']}" for segment in transcript)[m
+[32m+[m[32m        if len(source_text) > 12000:[m
+[32m+[m[32m            source_text = source_text[:12000] + "\n...[transcript truncated]"[m
+[32m+[m[32m        prompt = f"""You are an expert short-video editor who finds the most viral, attention-grabbing moments in a video transcript.[m
+[32m+[m
+[32m+[m[32mPick exactly {count} non-overlapping highlights. Each highlight must be between 10 and {clip_duration} seconds long. Prioritize moments with: strong emotion, a punchline or twist, a bold or surprising claim, a clear hook in the first 2 seconds, or a satisfying payoff.[m
+[32m+[m
+[32m+[m[32mPreserve the transcript's original spoken language exactly; never translate Hindi, Hinglish, Gujarati, or English.[m
+[32m+[m
+[32m+[m[32mReturn JSON only in this exact shape:[m
+[32m+[m[32m{{"highlights":[{{"start":number,"end":number,"tag":string,"reason":string}}]}}[m
+[32m+[m
+[32m+[m[32mTranscript:[m
+[32m+[m[32m{source_text}"""[m
+[32m+[m[32m        payload = json.dumps({"model": OPENAI_MODEL, "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}).encode()[m
+[32m+[m[32m        request = Request("https://api.openai.com/v1/chat/completions", data=payload, headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, method="POST")[m
+[32m+[m[32m        for attempt in range(2):[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                with urlopen(request, timeout=45) as response:[m
+[32m+[m[32m                    content = json.loads(json.loads(response.read())["choices"][0]["message"]["content"])[m
+[32m+[m[32m                candidates = [][m
+[32m+[m[32m                for item in content.get("highlights", []):[m
+[32m+[m[32m                    start = max(0.0, float(item["start"]))[m
+[32m+[m[32m                    end = min(duration, min(float(item["end"]), start + clip_duration))[m
+[32m+[m[32m                    if end - start >= 10:[m
+[32m+[m[32m                        candidates.append({"start": round(start, 2), "end": round(end, 2), "title": "", "tag": str(item.get("tag", "HIGHLIGHT"))[:32]})[m
+[32m+[m[32m                selected = snap(candidates)[m
+[32m+[m[32m                if selected:[m
+[32m+[m[32m                    return selected[:count][m
+[32m+[m[32m                break[m
+[32m+[m[32m            except (URLError, TimeoutError, OSError) as error:[m
+[32m+[m[32m                print(f"OpenAI attempt {attempt + 1} failed: {error}")[m
+[32m+[m[32m                if attempt == 0:[m
+[32m+[m[32m                    time.sleep(2)[m
+[32m+[m[32m                    continue[m
+[32m+[m[32m            except (KeyError, TypeError, ValueError) as error:[m
+[32m+[m[32m                print(f"OpenAI returned an unusable response: {error}")[m
+[32m+[m[32m                break[m
+     # Deterministic fallback preserves the spoken language and works if an AI provider is unavailable.[m
+     if not transcript:[m
+[31m-        return [{"start": round(index * max(1, duration - clip_duration) / max(1, count - 1), 1), "end": round(min(duration, index * max(1, duration - clip_duration) / max(1, count - 1) + clip_duration), 1), "title": f"Highlight {index + 1}", "tag": "HIGHLIGHT"} for index in range(count)][m
+[32m+[m[32m        windows = [{"start": round(index * max(1, duration - clip_duration) / max(1, count - 1), 1), "end": round(min(duration, index * max(1, duration - clip_duration) / max(1, count - 1) + clip_duration), 1), "title": f"Highlight {index + 1}", "tag": "HIGHLIGHT"} for index in range(count)][m
+[32m+[m[32m        return snap(windows)[:count] or windows[:count][m
+     windows = [][m
+     for index in range(count):[m
+         target = duration * (index + .5) / count[m
+[36m@@ -307,7 +367,7 @@[m [mdef choose_highlights(transcript: list[dict[str, Any]], duration: float, count:[m
+         end = min(duration, start + clip_duration)[m
+         title = re.sub(r"[\s,.!?;:]+$", "", nearest["text"])[:70] or f"Highlight {index + 1}"[m
+         windows.append({"start": round(start, 2), "end": round(end, 2), "title": title, "tag": "HIGHLIGHT"})[m
+[31m-    return windows[m
+[32m+[m[32m    return snap(windows)[:count] or windows[:count][m
+ [m
+ [m
+ def face_center(source: Path) -> float:[m
+[36m@@ -343,7 +403,7 @@[m [mdef write_ass(segments: list[dict[str, Any]], clip_start: float, path: Path, sty[m
+                 start, end = word["start"] - clip_start, word["end"] - clip_start[m
+                 if end > 0:[m
+                     style_name = "Emphasis" if len(text) >= 6 or "!" in text else "Default"[m
+[31m-                    lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(max(start + .1, end))},{style_name},,0,0,0,,{text}\n")[m
+[32m+[m[32m                    lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(max(start + 0.1, end))},{style_name},,0,0,0,,{text}\n")[m
+     path.write_text("".join(lines), encoding="utf-8")[m
+ [m
+ [m
+[36m@@ -362,7 +422,7 @@[m [mdef render_clip(source: Path, metadata: dict[str, Any], clip: dict[str, Any], tr[m
+         command += ["-preset", VIDEO_PRESET, "-crf", os.getenv("VIDEO_CRF", "20")][m
+     command += ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(output)][m
+     run(command, "Clip rendering")[m
+[31m-    run(["ffmpeg", "-y", "-ss", ".1", "-i", str(output), "-frames:v", "1", "-q:v", "2", str(thumbnail)], "Thumbnail generation")[m
+[32m+[m[32m    run(["ffmpeg", "-y", "-ss", "0.1", "-i", str(output), "-frames:v", "1", "-q:v", "2", str(thumbnail)], "Thumbnail generation")[m
+     validate_output(output)[m
+     return output, thumbnail[m
+ [m
+[36m@@ -398,11 +458,13 @@[m [mdef process_job(job_id: str) -> None:[m
+         update_job(job_id, status="transcribing", stage="transcribing", progress=25, message="Transcribing speech and lyrics.")[m
+         transcription_started = time.monotonic()[m
+         transcript = transcribe(source, work_dir) if metadata["has_audio"] else [][m
+[31m-        update_job(job_id, progress=45, transcript=transcript, metrics={"transcription_seconds": round(time.monotonic() - transcription_started, 2)})[m
+[32m+[m[32m        update_job(job_id, progress=40, transcript=transcript, metrics={"transcription_seconds": round(time.monotonic() - transcription_started, 2)})[m
+         if require_job(job_id)["cancel_requested"]:[m
+             return[m
+[32m+[m[32m        update_job(job_id, progress=45, message="Detecting scene changes.")[m
+[32m+[m[32m        scene_times = detect_scene_changes(source)[m
+         update_job(job_id, status="finding_highlights", stage="finding_highlights", progress=50, message="Selecting the strongest moments.")[m
+[31m-        highlights = choose_highlights(transcript, metadata["duration"], job["clip_count"], job["clip_duration"])[m
+[32m+[m[32m        highlights = choose_highlights(transcript, metadata["duration"], job["clip_count"], job["clip_duration"], scene_times)[m
+         update_job(job_id, status="generating_captions", stage="generating_captions", progress=55, message="Preparing synchronized captions.", highlights=highlights)[m
+         job = require_job(job_id)[m
+         job["face_center"] = face_center(source) if metadata["width"] > metadata["height"] else .5[m
+[36m@@ -427,4 +489,4 @@[m [mdef process_job(job_id: str) -> None:[m
+ [m
+ @app.post("/api/clips/{job_id}/{clip_index}/adjust")[m
+ def adjust_clip(job_id: str, clip_index: int, request: AdjustClipRequest) -> dict[str, Any]:[m
+[31m-    raise HTTPException(status_code=501, detail={"code": "EDITOR_NOT_AVAILABLE", "message": "Clip timing edits are not enabled in this version."})[m
+[32m+[m[32m    raise HTTPException(status_code=501, detail={"code": "EDITOR_NOT_AVAILABLE", "message": "Clip timing edits are not enabled in this version."})[m
+\ No newline at end of file[m
