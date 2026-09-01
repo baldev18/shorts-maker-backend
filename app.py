@@ -451,7 +451,7 @@ def process_job(job_id: str) -> None:
             update_job(job_id, status="downloading", stage="downloading", progress=5, message="Downloading source video.")
             source = SOURCES_DIR / f"{job_id}.mp4"
             try:
-                ydl_opts = {"outtmpl": str(source), "format": "bv*[height<=1080]+ba/b[height<=1080]/b", "merge_output_format": "mp4", "retries": 3, "fragment_retries": 3, "socket_timeout": 30, "quiet": True, "noplaylist": True, "extractor_args": {"youtube": {"player_client": ["android", "web"]}}}
+                ydl_opts = {"outtmpl": str(source), "format": "bv*[height<=1080]+ba/b[height<=1080]/b", "merge_output_format": "mp4", "retries": 3, "fragment_retries": 3, "socket_timeout": 30, "quiet": True, "noplaylist": True, "extractor_args": {"youtube": {"player_client": ["web"]}}}
                 if COOKIES_PATH.exists():
                     ydl_opts["cookiefile"] = str(COOKIES_PATH)
                 with yt_dlp.YoutubeDL(ydl_opts) as downloader:
