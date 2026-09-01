@@ -48,6 +48,12 @@ OUTPUTS_DIR = DATA_DIR / "outputs"
 THUMBNAILS_DIR = DATA_DIR / "thumbnails"
 TEMP_DIR = DATA_DIR / "temp"
 JOBS_FILE = DATA_DIR / "jobs.json"
+
+_SECRET_COOKIES = Path("/etc/secrets/cookies.txt")
+COOKIES_PATH = Path("/tmp/cookies.txt")
+if _SECRET_COOKIES.exists():
+    shutil.copy(_SECRET_COOKIES, COOKIES_PATH)
+
 MAX_WORKERS = max(1, env_int("MAX_CONCURRENT_JOBS", 1))
 MAX_UPLOAD_MB = max(1, env_int("MAX_UPLOAD_MB", 2048))
 MAX_CLIPS = max(1, min(8, env_int("MAX_CLIPS", 3)))
@@ -191,6 +197,7 @@ async def upload_job(file: UploadFile = File(...), captions_enabled: bool = True
         raise HTTPException(status_code=400, detail={"code": "UNSUPPORTED_FORMAT", "message": "Upload MP4, MOV, MKV, WebM, or AVI video."})
     request = CreateJobRequest(captions_enabled=captions_enabled, caption_style=caption_style, clip_count=min(MAX_CLIPS, max(1, clip_count)), clip_duration=min(60, max(10, clip_duration)), source_url="upload")
     destination = UPLOADS_DIR / f"{uuid.uuid4().hex}{suffix}"
+
     size = 0
     try:
         with destination.open("wb") as output:
@@ -444,7 +451,10 @@ def process_job(job_id: str) -> None:
             update_job(job_id, status="downloading", stage="downloading", progress=5, message="Downloading source video.")
             source = SOURCES_DIR / f"{job_id}.mp4"
             try:
-                with yt_dlp.YoutubeDL({"outtmpl": str(source), "format": "bv*[height<=1080]+ba/b[height<=1080]/b", "merge_output_format": "mp4", "retries": 3, "fragment_retries": 3, "socket_timeout": 30, "quiet": True, "noplaylist": True, "cookiefile": "/etc/secrets/cookies.txt"}) as downloader:
+                ydl_opts = {"outtmpl": str(source), "format": "bv*[height<=1080]+ba/b[height<=1080]/b", "merge_output_format": "mp4", "retries": 3, "fragment_retries": 3, "socket_timeout": 30, "quiet": True, "noplaylist": True}
+                if COOKIES_PATH.exists():
+                    ydl_opts["cookiefile"] = str(COOKIES_PATH)
+                with yt_dlp.YoutubeDL(ydl_opts) as downloader:
                     downloader.download([job["source"]])
             except Exception as error:
                 fail_job(job_id, "VIDEO_DOWNLOAD_FAILED", "Unable to download the YouTube video. It may be private, restricted, or temporarily blocked by YouTube.", str(error))
